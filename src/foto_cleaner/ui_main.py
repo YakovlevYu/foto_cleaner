@@ -57,8 +57,8 @@ class MainWindow(QMainWindow):
         tb.addWidget(QLabel("Similarity threshold:"))
         self.threshold_spin = QSpinBox()
         self.threshold_spin.setRange(0, 20)
-        self.threshold_spin.setValue(6)
-        self.threshold_spin.setToolTip("Max Hamming distance for pHash. Lower = stricter.")
+        self.threshold_spin.setValue(10)
+        self.threshold_spin.setToolTip("Max Hamming distance for fast dHash. Higher = more permissive (finds more).")
         tb.addWidget(self.threshold_spin)
 
         tb.addSeparator()
@@ -66,8 +66,8 @@ class MainWindow(QMainWindow):
         tb.addWidget(QLabel("Scan window k:"))
         self.window_spin = QSpinBox()
         self.window_spin.setRange(1, 50)
-        self.window_spin.setValue(1)
-        self.window_spin.setToolTip("Compare each file to the next k files (sorted by name).")
+        self.window_spin.setValue(3)
+        self.window_spin.setToolTip("Compare each file to next k files (sorted by name). Higher = more matches, slower.")
         tb.addWidget(self.window_spin)
 
         tb.addSeparator()
