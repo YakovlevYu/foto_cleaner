@@ -102,17 +102,17 @@ class MainWindow(QMainWindow):
         btn_row = QHBoxLayout()
         main_layout.addLayout(btn_row)
 
-        self.remove_btn = QPushButton("Remove selected")
-        self.remove_btn.clicked.connect(self.remove_selected)
-        btn_row.addWidget(self.remove_btn)
+        self.scan_btn = QPushButton("Start")
+        self.scan_btn.clicked.connect(self.toggle_scan)
+        btn_row.addWidget(self.scan_btn)
 
         self.skip_btn = QPushButton("Skip")
         self.skip_btn.clicked.connect(self.skip_group)
         btn_row.addWidget(self.skip_btn)
 
-        self.scan_btn = QPushButton("Scan")
-        self.scan_btn.clicked.connect(self.start_scan)
-        btn_row.addWidget(self.scan_btn)
+        self.remove_btn = QPushButton("Remove selected")
+        self.remove_btn.clicked.connect(self.remove_selected)
+        btn_row.addWidget(self.remove_btn)
 
     def _set_idle_state(self) -> None:
         self.progress.setValue(0)
@@ -121,7 +121,17 @@ class MainWindow(QMainWindow):
         self.current_group = []
         self.remove_btn.setEnabled(False)
         self.skip_btn.setEnabled(False)
+        self.scan_btn.setText("Start")
         self.scan_btn.setEnabled(self.root_folder is not None)
+
+    def _scan_is_running(self) -> bool:
+        return self._scan_thread is not None and self._scan_thread.isRunning()
+
+    def toggle_scan(self) -> None:
+        if self._scan_is_running():
+            self.stop_scan()
+            return
+        self.start_scan()
 
     def pick_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Select folder to scan")
@@ -149,7 +159,8 @@ class MainWindow(QMainWindow):
         window_k = int(self.window_spin.value())
 
         self.progress.setRange(0, 0)  # indeterminate until hashing signals start
-        self.scan_btn.setEnabled(False)
+        self.scan_btn.setText("Stop")
+        self.scan_btn.setEnabled(True)
         self.remove_btn.setEnabled(False)
         self.skip_btn.setEnabled(False)
 
@@ -175,6 +186,18 @@ class MainWindow(QMainWindow):
 
         self._scan_thread.start()
 
+    def stop_scan(self) -> None:
+        if not self._scan_is_running():
+            return
+
+        self.status_label.setText("Stopping scan…")
+        self.scan_btn.setEnabled(False)
+        self.remove_btn.setEnabled(False)
+        self.skip_btn.setEnabled(False)
+
+        if self._scanner is not None:
+            self._scanner.cancel()
+
     def _cleanup_scan(self) -> None:
         if self._scanner is not None:
             self._scanner.deleteLater()
@@ -183,7 +206,8 @@ class MainWindow(QMainWindow):
         self._scanner = None
         self._scan_thread = None
         self._closing = False
-        self.scan_btn.setEnabled(True)
+        self.scan_btn.setText("Start")
+        self.scan_btn.setEnabled(self.root_folder is not None)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         # Guard repeated close events while cancellation is already being processed.
