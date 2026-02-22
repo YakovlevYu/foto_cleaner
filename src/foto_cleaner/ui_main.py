@@ -5,7 +5,7 @@ import sys
 from typing import List, Optional
 
 from PyQt6.QtCore import Qt, QThread, QSize
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtGui import QAction, QCloseEvent, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -39,6 +39,7 @@ class MainWindow(QMainWindow):
 
         self._scan_thread: Optional[QThread] = None
         self._scanner: Optional[ScannerWorker] = None
+        self._closing = False
 
         self._build_ui()
         self._set_idle_state()
@@ -181,7 +182,35 @@ class MainWindow(QMainWindow):
             self._scan_thread.deleteLater()
         self._scanner = None
         self._scan_thread = None
+        self._closing = False
         self.scan_btn.setEnabled(True)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        # Guard repeated close events while cancellation is already being processed.
+        if self._closing:
+            event.accept()
+            return
+
+        scan_thread = self._scan_thread
+        scanner = self._scanner
+        is_active = scan_thread is not None and scan_thread.isRunning()
+
+        if is_active:
+            self._closing = True
+            self.status_label.setText("Stopping scan…")
+
+            if scanner is not None:
+                scanner.cancel()
+
+            scan_thread.quit()
+            scan_thread.wait(1500)
+
+            # If the thread is already done but the finished signal/event-loop cleanup
+            # has not run yet, ensure we still clear references safely.
+            if self._scan_thread is not None and not self._scan_thread.isRunning():
+                self._cleanup_scan()
+
+        event.accept()
 
     def _on_status(self, text: str) -> None:
         self.status_label.setText(text)
