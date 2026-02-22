@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -236,14 +236,25 @@ class ScannerWorker(QObject):
         hashed = 0
         unreadable = 0
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            future_to_idx = {pool.submit(self._compute_phash, p): i for i, p in enumerate(paths)}
+        pool = ThreadPoolExecutor(max_workers=workers)
+        shutdown_called = False
+        future_to_idx = {pool.submit(self._compute_phash, p): i for i, p in enumerate(paths)}
+
+        try:
             for future in as_completed(future_to_idx):
                 if self._cancelled:
-                    break
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    shutdown_called = True
+                    return hashes, processed, hashed, unreadable
 
                 idx = future_to_idx[future]
-                h = future.result()
+                try:
+                    h = future.result()
+                except CancelledError:
+                    continue
+                except Exception:
+                    h = None
+
                 hashes[idx] = h
 
                 processed += 1
@@ -253,5 +264,8 @@ class ScannerWorker(QObject):
                     hashed += 1
 
                 self.progress.emit(total, processed, os.path.basename(paths[idx]))
+        finally:
+            if not shutdown_called:
+                pool.shutdown(wait=True)
 
         return hashes, processed, hashed, unreadable
