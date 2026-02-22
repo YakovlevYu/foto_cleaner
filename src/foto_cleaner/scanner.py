@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 import imagehash
 
 # NEW: HEIC/HEIF Pillow plugin
@@ -73,12 +74,13 @@ class ScannerWorker(QObject):
                 return
 
             self.status.emit(f"Scanning {n} images (window k={self.window_k})…")
+            self.status.emit("Hashing images in parallel (fast mode)…")
 
-            hashes: List[Optional[imagehash.ImageHash]] = [None] * n
-            attempted = [False] * n
-            processed_count = 0
-            hashed_count = 0
-            unreadable_count = 0
+            hashes, processed_count, hashed_count, unreadable_count = self._compute_hashes_parallel(paths)
+            if self._cancelled:
+                self.status.emit("Cancelled.")
+                self.finished.emit()
+                return
 
             parent = list(range(n))
             rank = [0] * n
@@ -114,25 +116,6 @@ class ScannerWorker(QObject):
                     emitted_roots.add(ra)
                 return ra
 
-            def ensure_hash(idx: int) -> Optional[imagehash.ImageHash]:
-                nonlocal processed_count, hashed_count, unreadable_count
-                if attempted[idx]:
-                    return hashes[idx]
-                if self._cancelled:
-                    return None
-
-                p = paths[idx]
-                attempted[idx] = True
-                processed_count += 1
-                self.progress.emit(n, processed_count, os.path.basename(p))
-                h = self._compute_phash(p)
-                hashes[idx] = h
-                if h is not None:
-                    hashed_count += 1
-                else:
-                    unreadable_count += 1
-                return h
-
             def is_closed(comp: Component, current_i: int) -> bool:
                 return current_i > comp.max_idx + self.window_k
 
@@ -143,14 +126,14 @@ class ScannerWorker(QObject):
                     self.finished.emit()
                     return
 
-                hi = ensure_hash(i)
+                hi = hashes[i]
                 if hi is None:
                     i += 1
                     continue
 
                 j_max = min(n - 1, i + self.window_k)
                 for j in range(i + 1, j_max + 1):
-                    hj = ensure_hash(j)
+                    hj = hashes[j]
                     if hj is None:
                         continue
                     if (hi - hj) <= self.threshold:
@@ -230,9 +213,45 @@ class ScannerWorker(QObject):
         return collected
 
     def _compute_phash(self, path: str) -> Optional[imagehash.ImageHash]:
+        # Speed-first / high-recall mode: small dHash is faster than pHash and
+        # intentionally catches more candidate matches at the cost of precision.
         try:
             with Image.open(path) as im:
+                im = ImageOps.exif_transpose(im)
+                im.thumbnail((512, 512))
                 im = im.convert("RGB")
-                return imagehash.phash(im)
+                return imagehash.dhash(im, hash_size=8)
         except (UnidentifiedImageError, OSError):
             return None
+
+    def _compute_hashes_parallel(
+        self,
+        paths: List[str],
+    ) -> Tuple[List[Optional[imagehash.ImageHash]], int, int, int]:
+        total = len(paths)
+        hashes: List[Optional[imagehash.ImageHash]] = [None] * total
+        workers = min(32, max(1, (os.cpu_count() or 4)))
+
+        processed = 0
+        hashed = 0
+        unreadable = 0
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            future_to_idx = {pool.submit(self._compute_phash, p): i for i, p in enumerate(paths)}
+            for future in as_completed(future_to_idx):
+                if self._cancelled:
+                    break
+
+                idx = future_to_idx[future]
+                h = future.result()
+                hashes[idx] = h
+
+                processed += 1
+                if h is None:
+                    unreadable += 1
+                else:
+                    hashed += 1
+
+                self.progress.emit(total, processed, os.path.basename(paths[idx]))
+
+        return hashes, processed, hashed, unreadable
