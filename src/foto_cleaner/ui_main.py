@@ -191,7 +191,7 @@ class MainWindow(QMainWindow):
         if self.progress.maximum() == 0:
             self.progress.setRange(0, total)
         self.progress.setValue(current)
-        self.status_label.setText(f"Hashing: {current}/{total} — {filename}")
+        self.status_label.setText(f"Scanning: {current}/{total} — {filename}")
 
     def _on_error(self, msg: str) -> None:
         self.progress.setRange(0, 100)

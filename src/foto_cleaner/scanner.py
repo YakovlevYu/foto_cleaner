@@ -34,7 +34,7 @@ class Component:
 
 
 class ScannerWorker(QObject):
-    progress = pyqtSignal(int, int, str)     # total_files, hashed_count, current_file
+    progress = pyqtSignal(int, int, str)     # total_files, processed_count, current_file
     status = pyqtSignal(str)
 
     group_found = pyqtSignal(list)           # List[str]
@@ -75,7 +75,10 @@ class ScannerWorker(QObject):
             self.status.emit(f"Scanning {n} images (window k={self.window_k})…")
 
             hashes: List[Optional[imagehash.ImageHash]] = [None] * n
+            attempted = [False] * n
+            processed_count = 0
             hashed_count = 0
+            unreadable_count = 0
 
             parent = list(range(n))
             rank = [0] * n
@@ -112,18 +115,22 @@ class ScannerWorker(QObject):
                 return ra
 
             def ensure_hash(idx: int) -> Optional[imagehash.ImageHash]:
-                nonlocal hashed_count
-                if hashes[idx] is not None:
+                nonlocal processed_count, hashed_count, unreadable_count
+                if attempted[idx]:
                     return hashes[idx]
                 if self._cancelled:
                     return None
 
                 p = paths[idx]
-                self.progress.emit(n, hashed_count + 1, os.path.basename(p))
+                attempted[idx] = True
+                processed_count += 1
+                self.progress.emit(n, processed_count, os.path.basename(p))
                 h = self._compute_phash(p)
                 hashes[idx] = h
                 if h is not None:
                     hashed_count += 1
+                else:
+                    unreadable_count += 1
                 return h
 
             def is_closed(comp: Component, current_i: int) -> bool:
@@ -198,7 +205,13 @@ class ScannerWorker(QObject):
                     self.finished.emit()
                     return
 
-            self.status.emit("Done.")
+            if unreadable_count:
+                self.status.emit(
+                    f"Done. Processed {processed_count}/{n} files; "
+                    f"{hashed_count} hashed, {unreadable_count} unreadable."
+                )
+            else:
+                self.status.emit("Done.")
             self.finished.emit()
 
         except Exception as e:
