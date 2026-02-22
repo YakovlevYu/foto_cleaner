@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import List, Optional, Set
+from typing import List, Optional
 
 from PyQt6.QtCore import Qt, QThread, QSize
 from PyQt6.QtGui import QAction, QIcon
@@ -33,21 +33,17 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Similar Photo Finder")
 
-        # State
         self.root_folder: Optional[str] = None
-        self.groups: List[List[str]] = []
-        self.group_index: int = 0
+        self.current_group: List[str] = []
         self.thumbnailer = Thumbnailer(size=200)
 
         self._scan_thread: Optional[QThread] = None
         self._scanner: Optional[ScannerWorker] = None
 
-        # UI
         self._build_ui()
         self._set_idle_state()
 
     def _build_ui(self) -> None:
-        # Toolbar
         tb = QToolBar("Main")
         self.addToolBar(tb)
 
@@ -60,45 +56,48 @@ class MainWindow(QMainWindow):
         tb.addWidget(QLabel("Similarity threshold:"))
         self.threshold_spin = QSpinBox()
         self.threshold_spin.setRange(0, 20)
-        self.threshold_spin.setValue(5)
-        self.threshold_spin.setToolTip("Max Hamming distance for phash. Lower = stricter, fewer matches.")
+        self.threshold_spin.setValue(6)
+        self.threshold_spin.setToolTip("Max Hamming distance for pHash. Lower = stricter.")
         tb.addWidget(self.threshold_spin)
+
+        tb.addSeparator()
+
+        tb.addWidget(QLabel("Scan window k:"))
+        self.window_spin = QSpinBox()
+        self.window_spin.setRange(1, 50)
+        self.window_spin.setValue(1)
+        self.window_spin.setToolTip("Compare each file to the next k files (sorted by name).")
+        tb.addWidget(self.window_spin)
 
         tb.addSeparator()
 
         self.status_label = QLabel("Select a folder to start.")
         tb.addWidget(self.status_label)
 
-        # Central
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
 
-        # Progress
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.setTextVisible(True)
         main_layout.addWidget(self.progress)
 
-        # Group label
         self.group_label = QLabel("")
         self.group_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         main_layout.addWidget(self.group_label)
 
-        # Thumbnails list
         self.listw = QListWidget()
         self.listw.setViewMode(QListWidget.ViewMode.IconMode)
         self.listw.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.listw.setMovement(QListWidget.Movement.Static)
         self.listw.setIconSize(QSize(200, 200))
-        # self.listw.setIconSize(self.thumbnailer.get_pixmap.__self__.size if hasattr(self.thumbnailer.get_pixmap, "__self__") else None)
         self.listw.setSpacing(10)
-        self.listw.setSelectionMode(QListWidget.SelectionMode.NoSelection)  # we use checkboxes
+        self.listw.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.listw.itemDoubleClicked.connect(self._open_item)
         main_layout.addWidget(self.listw, stretch=1)
 
-        # Buttons
         btn_row = QHBoxLayout()
         main_layout.addLayout(btn_row)
 
@@ -118,6 +117,7 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.group_label.setText("")
         self.listw.clear()
+        self.current_group = []
         self.remove_btn.setEnabled(False)
         self.skip_btn.setEnabled(False)
         self.scan_btn.setEnabled(self.root_folder is not None)
@@ -135,34 +135,39 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No folder", "Please select a folder first.")
             return
 
-        # Prevent multiple scans
         if self._scan_thread is not None:
             QMessageBox.information(self, "Scan in progress", "A scan is already running.")
             return
 
-        self.groups = []
-        self.group_index = 0
         self.listw.clear()
+        self.current_group = []
+        self.group_label.setText("")
+        self.status_label.setText("Starting scan…")
 
         threshold = int(self.threshold_spin.value())
+        window_k = int(self.window_spin.value())
 
-        self.status_label.setText("Starting scan…")
-        self.progress.setRange(0, 0)  # indeterminate until first progress arrives
+        self.progress.setRange(0, 0)  # indeterminate until hashing signals start
         self.scan_btn.setEnabled(False)
         self.remove_btn.setEnabled(False)
         self.skip_btn.setEnabled(False)
 
         self._scan_thread = QThread()
-        self._scanner = ScannerWorker(root_folder=self.root_folder, threshold=threshold, bucket_prefix_hex=4)
+        self._scanner = ScannerWorker(
+            root_folder=self.root_folder,
+            threshold=threshold,
+            window_k=window_k,
+        )
         self._scanner.moveToThread(self._scan_thread)
 
         self._scan_thread.started.connect(self._scanner.run)
         self._scanner.progress.connect(self._on_progress)
         self._scanner.status.connect(self._on_status)
+        self._scanner.group_found.connect(self._on_group_found)
         self._scanner.finished.connect(self._on_finished)
         self._scanner.error.connect(self._on_error)
 
-        # Clean-up
+        # Cleanup
         self._scanner.finished.connect(self._scan_thread.quit)
         self._scanner.error.connect(self._scan_thread.quit)
         self._scan_thread.finished.connect(self._cleanup_scan)
@@ -176,12 +181,13 @@ class MainWindow(QMainWindow):
             self._scan_thread.deleteLater()
         self._scanner = None
         self._scan_thread = None
+        self.scan_btn.setEnabled(True)
 
     def _on_status(self, text: str) -> None:
         self.status_label.setText(text)
 
     def _on_progress(self, total: int, current: int, filename: str) -> None:
-        # Switch to determinate if needed
+        # Switch to determinate
         if self.progress.maximum() == 0:
             self.progress.setRange(0, total)
         self.progress.setValue(current)
@@ -190,40 +196,33 @@ class MainWindow(QMainWindow):
     def _on_error(self, msg: str) -> None:
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        self.scan_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", msg)
         self.status_label.setText("Error.")
+        self._set_idle_state()
 
-    def _on_finished(self, groups: List[List[str]]) -> None:
+    def _on_finished(self) -> None:
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
-        self.groups = groups
-        self.group_index = 0
+        self.status_label.setText("Done.")
+        self.remove_btn.setEnabled(False)
+        self.skip_btn.setEnabled(False)
+        # keep thumbnails shown if last group was displayed
 
-        if not self.groups:
-            self.status_label.setText("No similar groups found.")
-            self._set_idle_state()
-            return
+    def _on_group_found(self, group_paths: List[str]) -> None:
+        # Display group and enable actions; scanner is paused internally until we call continue_scan()
+        self.current_group = group_paths
+        self._render_group(group_paths)
 
-        self.status_label.setText(f"Found {len(self.groups)} similar group(s).")
-        self._show_current_group()
-        self.scan_btn.setEnabled(True)
+        self.remove_btn.setEnabled(True)
+        self.skip_btn.setEnabled(True)
 
-    def _show_current_group(self) -> None:
+    def _render_group(self, group: List[str]) -> None:
         self.listw.clear()
-
-        if not self.root_folder:
-            return
-
-        if self.group_index >= len(self.groups):
+        if not group:
             self.group_label.setText("")
-            self.status_label.setText("Done. No more groups.")
-            self.remove_btn.setEnabled(False)
-            self.skip_btn.setEnabled(False)
             return
 
-        group = self.groups[self.group_index]
-        self.group_label.setText(f"Group {self.group_index + 1} / {len(self.groups)} — {len(group)} image(s)")
+        self.group_label.setText(f"Found similar group: {len(group)} image(s)")
 
         for path in group:
             item = QListWidgetItem()
@@ -236,12 +235,8 @@ class MainWindow(QMainWindow):
             if pix is not None:
                 item.setIcon(QIcon(pix))
 
-            # Store full path
             item.setData(Qt.ItemDataRole.UserRole, path)
             self.listw.addItem(item)
-
-        self.remove_btn.setEnabled(True)
-        self.skip_btn.setEnabled(True)
 
     def _open_item(self, item: QListWidgetItem) -> None:
         path = item.data(Qt.ItemDataRole.UserRole)
@@ -259,7 +254,7 @@ class MainWindow(QMainWindow):
         return checked
 
     def remove_selected(self) -> None:
-        if not self.root_folder:
+        if not self.root_folder or not self._scanner:
             return
 
         checked = self._get_checked_paths()
@@ -273,23 +268,24 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Move failed", f"Failed to move selected files:\n{e}")
             return
 
-        # Remove moved images from current group listing and underlying group list
-        current_group = set(self.groups[self.group_index])
-        remaining = [p for p in self.groups[self.group_index] if p not in set(checked)]
-        self.groups[self.group_index] = remaining
+        # After action: clear UI group and resume scanning
+        self.listw.clear()
+        self.group_label.setText("")
+        self.remove_btn.setEnabled(False)
+        self.skip_btn.setEnabled(False)
 
-        # If group shrinks below 2, skip automatically
-        if len(remaining) < 2:
-            self.group_index += 1
-            self._show_current_group()
-            return
-
-        # Otherwise refresh the current group view
-        self._show_current_group()
+        self._scanner.continue_scan()
 
     def skip_group(self) -> None:
-        self.group_index += 1
-        self._show_current_group()
+        if not self._scanner:
+            return
+
+        self.listw.clear()
+        self.group_label.setText("")
+        self.remove_btn.setEnabled(False)
+        self.skip_btn.setEnabled(False)
+
+        self._scanner.continue_scan()
 
 
 def main() -> None:
