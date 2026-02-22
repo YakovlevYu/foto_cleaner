@@ -13,7 +13,26 @@ A PyQt6 desktop app for Ubuntu/Linux that scans a folder for visually similar ph
 - Supports HEIC/HEIF via `pillow-heif` + `libheif`
 
 ## Install (Ubuntu)
+
 ### System deps (HEIC)
 ```bash
 sudo apt-get update
 sudo apt-get install -y libheif1 libheif-dev
+```
+
+### Python environment
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+```
+
+### Install the app
+```bash
+pip install .
+```
+
+### Run
+```bash
+foto-cleaner
+```
