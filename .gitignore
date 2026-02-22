@@ -33,3 +33,6 @@ out/
 # System specific
 .DS_Store
 Thumbs.db
+
+# test folder
+test
