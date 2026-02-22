@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-import os
 from typing import Dict, Optional, Tuple
 
 from PIL import Image, ImageOps
 from PyQt6.QtGui import QImage, QPixmap
 
+# NEW: HEIC/HEIF Pillow plugin
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except Exception:
+    pass
+
 
 class Thumbnailer:
-    """
-    Creates thumbnails for images with a simple in-memory cache.
-    """
     def __init__(self, size: int = 200):
         self.size = int(size)
         self._cache: Dict[Tuple[str, int], QPixmap] = {}
@@ -22,7 +25,7 @@ class Thumbnailer:
 
         try:
             with Image.open(path) as im:
-                im = ImageOps.exif_transpose(im)  # respect EXIF rotation
+                im = ImageOps.exif_transpose(im)
                 im = im.convert("RGB")
                 im.thumbnail((self.size, self.size))
                 qimg = self._pil_to_qimage(im)
@@ -33,9 +36,7 @@ class Thumbnailer:
             return None
 
     def _pil_to_qimage(self, im: Image.Image) -> QImage:
-        # RGB PIL -> QImage
         w, h = im.size
         data = im.tobytes("raw", "RGB")
         qimg = QImage(data, w, h, 3 * w, QImage.Format.Format_RGB888)
-        # Make a deep copy so the buffer isn't freed when `data` goes out of scope
         return qimg.copy()
