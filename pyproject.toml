@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "foto-cleaner"
+version = "0.1.0"
+description = "PyQt6 app to find visually similar photos and move selected duplicates to a removed folder."
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [{name = "Yury Iakovlev"}]
+dependencies = [
+  "PyQt6>=6.10",
+  "Pillow>=12.1",
+  "ImageHash>=4.3",
+  "pillow-heif>=1.2",
+]
+
+[project.scripts]
+foto-cleaner = "foto_cleaner.ui_main:main"

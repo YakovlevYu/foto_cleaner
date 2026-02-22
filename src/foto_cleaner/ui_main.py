@@ -23,9 +23,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from scanner import ScannerWorker
-from thumbnailer import Thumbnailer
-from ops import open_in_viewer, move_to_removed
+from foto_cleaner.scanner import ScannerWorker
+from foto_cleaner.thumbnailer import Thumbnailer
+from foto_cleaner.ops import open_in_viewer, move_to_removed
 
 
 class MainWindow(QMainWindow):
