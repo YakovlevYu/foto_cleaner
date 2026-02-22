@@ -146,9 +146,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No folder", "Please select a folder first.")
             return
 
-        if self._scan_thread is not None:
+        if self._scan_is_running():
             QMessageBox.information(self, "Scan in progress", "A scan is already running.")
             return
+
+        if self._scan_thread is not None:
+            self._cleanup_scan()
 
         self.listw.clear()
         self.current_group = []
