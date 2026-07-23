@@ -34,6 +34,9 @@ full byte-for-byte content comparison (a true 100% match).
 - **Move duplicates** → moves checked files into a `duplicates/` folder inside the
   target folder, **preserving the original subfolder structure**
 - **Clear** → full reset (results, stats, and selected folders)
+- **Same-folder safety**: when the target and search folders are the same, the
+  first copy of each identical set is kept as the original and only the later
+  copies are listed, so you can never remove every copy of a file
 
 ## Install (Ubuntu)
 

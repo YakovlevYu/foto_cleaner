@@ -49,8 +49,17 @@ class DuplicateFinderWorker(QObject):
                 self.finished.emit([], self._stats([], total))
                 return
 
+            # When the target and search folders are the same, every copy would
+            # otherwise list every other copy as its duplicate, so checking all
+            # rows would delete the whole set. In that mode we keep the first
+            # occurrence of each identical group as the original and only report
+            # the later copies.
+            same_dir = self.target_folder == self.search_folder
+
             self.status.emit("Indexing search folder…")
-            search_index = self._index_search_folder(self.search_folder)
+            search_index = self._index_search_folder(
+                self.search_folder, skip_duplicates=same_dir
+            )
             if self._cancelled:
                 self.status.emit("Cancelled.")
                 self.finished.emit([], self._stats([], total))
@@ -58,6 +67,7 @@ class DuplicateFinderWorker(QObject):
 
             self.status.emit(f"Comparing {total} files…")
             results: List[DupResult] = []
+            kept: set[str] = set()  # originals to preserve (same-dir mode)
             for processed, tpath in enumerate(target_files, start=1):
                 if self._cancelled:
                     self.status.emit("Cancelled.")
@@ -68,7 +78,14 @@ class DuplicateFinderWorker(QObject):
 
                 name = os.path.basename(tpath)
                 candidates = search_index.get(name, ())
-                match = self._first_content_match(tpath, candidates)
+                if same_dir:
+                    # Only match against an already-kept earlier original; the
+                    # first file of each identical group becomes that original.
+                    match = self._first_content_match(tpath, candidates, only=kept)
+                    if match is None:
+                        kept.add(os.path.abspath(tpath))
+                else:
+                    match = self._first_content_match(tpath, candidates)
                 if match is not None:
                     try:
                         size = os.path.getsize(tpath)
@@ -108,22 +125,43 @@ class DuplicateFinderWorker(QObject):
         collected.sort(key=lambda p: os.path.relpath(p, root).lower())
         return collected
 
-    def _index_search_folder(self, root: str) -> Dict[str, List[str]]:
-        """Map basename -> list of absolute paths under the search folder."""
+    def _index_search_folder(
+        self, root: str, skip_duplicates: bool = False
+    ) -> Dict[str, List[str]]:
+        """Map basename -> list of absolute paths under the search folder.
+
+        When skip_duplicates is set (same-dir mode), the target's own
+        duplicates/ folder is excluded so previously moved copies are not
+        treated as originals.
+        """
+        duplicates_dir = os.path.join(root, "duplicates")
         index: Dict[str, List[str]] = {}
-        for dirpath, _dirnames, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in os.walk(root):
             if self._cancelled:
                 return index
+            if skip_duplicates:
+                dirnames[:] = [
+                    d
+                    for d in dirnames
+                    if os.path.join(dirpath, d) != duplicates_dir and d != "duplicates"
+                ]
             for fn in filenames:
                 index.setdefault(fn, []).append(os.path.join(dirpath, fn))
         return index
 
-    def _first_content_match(self, target: str, candidates) -> str | None:
-        """Return the first candidate that is a 100% byte match of target."""
+    def _first_content_match(self, target: str, candidates, only=None) -> str | None:
+        """Return the first candidate that is a 100% byte match of target.
+
+        If `only` is given, restrict matching to candidates whose absolute path
+        is in that set (used to match against already-kept originals).
+        """
         target_abs = os.path.abspath(target)
         for cand in candidates:
-            if os.path.abspath(cand) == target_abs:
+            cand_abs = os.path.abspath(cand)
+            if cand_abs == target_abs:
                 # Same physical file (target folder overlaps search folder).
+                continue
+            if only is not None and cand_abs not in only:
                 continue
             try:
                 if filecmp.cmp(target, cand, shallow=False):
