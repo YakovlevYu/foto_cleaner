@@ -58,6 +58,7 @@ class DuplicatesWidget(QWidget):
         self._thread: Optional[QThread] = None
         self._worker: Optional[DuplicateFinderWorker] = None
         self._closing = False
+        self._active_search = False
 
         self._build_ui()
         self._update_button_states()
@@ -140,6 +141,7 @@ class DuplicatesWidget(QWidget):
 
     def clear_state(self) -> None:
         """Full reset: stop any search, clear table, stats, and folder inputs."""
+        self._active_search = False
         if self._search_is_running() and self._worker is not None:
             self._worker.cancel()
             if self._thread is not None:
@@ -207,10 +209,11 @@ class DuplicatesWidget(QWidget):
             self._cleanup_search()
 
         self.results = []
+        self._active_search = True
+        # Sorting off while streaming rows in (re-enabled when the search finishes).
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
-        self.table.setSortingEnabled(True)
-        self.stats_label.setText("Searching…")
+        self.stats_label.setText("Duplicates found: 0   |   Total size: 0 B")
         self.status_label.setText("Starting search…")
         self.progress.setRange(0, 0)  # indeterminate until comparison starts
 
@@ -221,6 +224,7 @@ class DuplicatesWidget(QWidget):
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)
         self._worker.status.connect(self._on_status)
+        self._worker.duplicate_found.connect(self._on_duplicate_found)
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
 
@@ -251,17 +255,36 @@ class DuplicatesWidget(QWidget):
         self.status_label.setText(f"Comparing: {current}/{total} — {filename}")
 
     def _on_error(self, msg: str) -> None:
+        self._active_search = False
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         QMessageBox.critical(self, "Error", msg)
         self.status_label.setText("Error.")
         self._update_button_states()
 
+    def _on_duplicate_found(self, r: DupResult) -> None:
+        if not self._active_search:
+            return
+        self.results.append(r)
+        self._append_row(r)
+        total_size = sum(x.size for x in self.results)
+        self.stats_label.setText(
+            f"Duplicates found: {len(self.results)}   |   "
+            f"Total size: {_human_size(total_size)}"
+        )
+
     def _on_finished(self, results: List[DupResult], stats: dict) -> None:
-        self.results = results
+        # Ignore a finished signal that arrives after a reset/clear.
+        if not self._active_search:
+            return
+        self._active_search = False
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
-        self._populate_table(results)
+        # Rows were streamed in (sorting was off); re-enable interactive sorting
+        # now, keeping the deterministic target-file order.
+        self.table.setSortingEnabled(True)
+        self.table.sortItems(self.COL_TARGET, Qt.SortOrder.AscendingOrder)
+        # Rows were streamed in as duplicates were found; just finalize stats.
         self.stats_label.setText(
             f"Target files: {stats.get('target_count', 0)}   |   "
             f"Duplicates found: {stats.get('dup_count', 0)}   |   "
@@ -270,30 +293,40 @@ class DuplicatesWidget(QWidget):
         self.status_label.setText("Done.")
         self._update_button_states()
 
+    def _set_row(self, row: int, r: DupResult) -> None:
+        target_item = _CaseInsensitiveItem(r.target_rel)
+        target_item.setToolTip(r.target_abs)
+        target_item.setData(Qt.ItemDataRole.UserRole, r.target_abs)
+        self.table.setItem(row, self.COL_TARGET, target_item)
+
+        # Path of the duplicate relative to the search folder.
+        dup_item = _CaseInsensitiveItem(r.dup_rel)
+        dup_item.setToolTip(r.dup_abs)
+        self.table.setItem(row, self.COL_DUP, dup_item)
+
+        remove_item = QTableWidgetItem()
+        remove_item.setFlags(
+            Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+        )
+        remove_item.setCheckState(Qt.CheckState.Checked)
+        remove_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.table.setItem(row, self.COL_REMOVE, remove_item)
+
     def _populate_table(self, results: List[DupResult]) -> None:
-        # Results already sorted by target_rel; disable live sorting while filling.
+        # Disable live sorting while filling, then restore a deterministic order.
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(results))
         for row, r in enumerate(results):
-            target_item = _CaseInsensitiveItem(r.target_rel)
-            target_item.setToolTip(r.target_abs)
-            target_item.setData(Qt.ItemDataRole.UserRole, r.target_abs)
-            self.table.setItem(row, self.COL_TARGET, target_item)
-
-            dup_item = _CaseInsensitiveItem(os.path.join(r.dup_dir, r.dup_name))
-            dup_item.setToolTip(r.dup_abs)
-            self.table.setItem(row, self.COL_DUP, dup_item)
-
-            remove_item = QTableWidgetItem()
-            remove_item.setFlags(
-                Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
-            )
-            remove_item.setCheckState(Qt.CheckState.Checked)
-            remove_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, self.COL_REMOVE, remove_item)
+            self._set_row(row, r)
         self.table.setSortingEnabled(True)
-        # Deterministic initial ordering: sorted by target file (ascending).
         self.table.sortItems(self.COL_TARGET, Qt.SortOrder.AscendingOrder)
+
+    def _append_row(self, r: DupResult) -> None:
+        # Sorting stays disabled during streaming; target files arrive in sorted
+        # order, so a plain append keeps the table sorted by target file.
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self._set_row(row, r)
 
     # ---- move ----------------------------------------------------------
 

@@ -13,8 +13,7 @@ class DupResult:
     target_abs: str      # absolute path of the target file
     target_rel: str      # path relative to the target folder (name if no subdirs)
     dup_abs: str         # absolute path of the confirmed duplicate in search folder
-    dup_dir: str         # directory of the duplicate
-    dup_name: str        # filename of the duplicate
+    dup_rel: str         # path relative to the search folder
     size: int            # size of the target file in bytes
 
 
@@ -27,6 +26,7 @@ class DuplicateFinderWorker(QObject):
 
     progress = pyqtSignal(int, int, str)     # total, processed, current filename
     status = pyqtSignal(str)
+    duplicate_found = pyqtSignal(object)     # DupResult, emitted as each is found
     finished = pyqtSignal(list, dict)        # List[DupResult], stats dict
     error = pyqtSignal(str)
 
@@ -74,18 +74,17 @@ class DuplicateFinderWorker(QObject):
                         size = os.path.getsize(tpath)
                     except OSError:
                         size = 0
-                    results.append(
-                        DupResult(
-                            target_abs=tpath,
-                            target_rel=os.path.relpath(tpath, self.target_folder),
-                            dup_abs=match,
-                            dup_dir=os.path.dirname(match),
-                            dup_name=os.path.basename(match),
-                            size=size,
-                        )
+                    result = DupResult(
+                        target_abs=tpath,
+                        target_rel=os.path.relpath(tpath, self.target_folder),
+                        dup_abs=match,
+                        dup_rel=os.path.relpath(match, self.search_folder),
+                        size=size,
                     )
-
-            results.sort(key=lambda r: r.target_rel.lower())
+                    results.append(result)
+                    # Target files are processed in sorted order, so streaming
+                    # rows keeps the table sorted by target file as it fills.
+                    self.duplicate_found.emit(result)
             self.status.emit(
                 f"Done. {len(results)} duplicate(s) found in {total} file(s)."
             )

@@ -25,9 +25,10 @@ full byte-for-byte content comparison (a true 100% match).
 
 - Pick a target folder and a search folder, then press **Search**
 - Considers **all** files (not just images)
+- Results stream into the table as each duplicate is confirmed
 - Results table (sorted by target file) with columns:
   - **Target file** — relative path within the target folder (or filename)
-  - **Duplicate found in** — directory + filename of the confirmed copy
+  - **Duplicate found in** — path of the confirmed copy relative to the search folder
   - **Remove** — checkbox (checked by default) to select for moving
 - Stats line shows target file count, duplicates found, and total duplicate size
 - **Move duplicates** → moves checked files into a `duplicates/` folder inside the
