@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from foto_cleaner.dup_finder import DuplicateFinderWorker, DupResult
-from foto_cleaner.ops import move_duplicates
+from foto_cleaner.ops import move_duplicates, open_in_viewer
 
 
 class _CaseInsensitiveItem(QTableWidgetItem):
@@ -97,12 +97,31 @@ class DuplicatesWidget(QWidget):
         controls.addWidget(self.search_label, stretch=1)
 
         # Matching mode.
-        self.ignore_names_cb = QCheckBox("Compare content without name (match by size, then content)")
+        mode_row = QHBoxLayout()
+        main_layout.addLayout(mode_row)
+
+        self.ignore_names_cb = QCheckBox("Compare content without name")
         self.ignore_names_cb.setToolTip(
-            "When checked, filenames are ignored: files of equal size are compared "
-            "byte-for-byte to find duplicates."
+            "Ignore filenames. JPEGs are matched by image payload (metadata "
+            "ignored); videos are matched by size within 1%; other file types "
+            "are not compared."
         )
-        main_layout.addWidget(self.ignore_names_cb)
+        self.ignore_names_cb.toggled.connect(self._on_ignore_names_toggled)
+        mode_row.addWidget(self.ignore_names_cb)
+
+        self.only_jpeg_cb = QCheckBox("Only JPEG")
+        self.only_jpeg_cb.setToolTip("Restrict content comparison to JPEG images.")
+        mode_row.addWidget(self.only_jpeg_cb)
+
+        self.only_videos_cb = QCheckBox("Only videos")
+        self.only_videos_cb.setToolTip("Restrict content comparison to video files.")
+        mode_row.addWidget(self.only_videos_cb)
+
+        mode_row.addStretch(1)
+
+        # Category filters only apply in content mode.
+        self.only_jpeg_cb.setEnabled(False)
+        self.only_videos_cb.setEnabled(False)
 
         # Stats line.
         self.stats_label = QLabel("No search run yet.")
@@ -130,6 +149,7 @@ class DuplicatesWidget(QWidget):
         header.setSectionResizeMode(self.COL_SIZE, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_REMOVE, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSortingEnabled(True)
+        self.table.itemDoubleClicked.connect(self._open_item)
         main_layout.addWidget(self.table, stretch=1)
 
         # Bottom button row: Search / Move / Clear.
@@ -163,6 +183,26 @@ class DuplicatesWidget(QWidget):
         self.search_action_btn.setEnabled(can_search)
         self.move_btn.setEnabled(not running and self.table.rowCount() > 0)
         self.clear_btn.setEnabled(not running)
+
+    def _on_ignore_names_toggled(self, checked: bool) -> None:
+        # Category filters only make sense when comparing by content.
+        self.only_jpeg_cb.setEnabled(checked)
+        self.only_videos_cb.setEnabled(checked)
+        if not checked:
+            self.only_jpeg_cb.setChecked(False)
+            self.only_videos_cb.setChecked(False)
+
+    def _open_item(self, item: QTableWidgetItem) -> None:
+        """Double-click opens the file in the default app (xdg-open)."""
+        if item.column() == self.COL_DUP:
+            source = self.table.item(item.row(), self.COL_DUP)
+        else:
+            source = self.table.item(item.row(), self.COL_TARGET)
+        if source is None:
+            return
+        path = source.data(Qt.ItemDataRole.UserRole)
+        if isinstance(path, str) and os.path.exists(path):
+            open_in_viewer(path)
 
     def clear_state(self) -> None:
         """Full reset: stop any search, clear table, stats, and folder inputs."""
@@ -243,11 +283,23 @@ class DuplicatesWidget(QWidget):
         self.status_label.setText("Starting search…")
         self.progress.setRange(0, 0)  # indeterminate until comparison starts
 
+        # Category filters: neither box (or both) means all supported types.
+        only_jpeg = self.only_jpeg_cb.isChecked()
+        only_videos = self.only_videos_cb.isChecked()
+        if only_jpeg and not only_videos:
+            match_jpeg, match_video = True, False
+        elif only_videos and not only_jpeg:
+            match_jpeg, match_video = False, True
+        else:
+            match_jpeg, match_video = True, True
+
         self._thread = QThread()
         self._worker = DuplicateFinderWorker(
             self.target_folder,
             self.search_folder,
             ignore_names=self.ignore_names_cb.isChecked(),
+            match_jpeg=match_jpeg,
+            match_video=match_video,
         )
         self._worker.moveToThread(self._thread)
 
@@ -332,6 +384,7 @@ class DuplicatesWidget(QWidget):
         # Path of the duplicate relative to the search folder.
         dup_item = _CaseInsensitiveItem(r.dup_rel)
         dup_item.setToolTip(r.dup_abs)
+        dup_item.setData(Qt.ItemDataRole.UserRole, r.dup_abs)
         self.table.setItem(row, self.COL_DUP, dup_item)
 
         size_item = _NumericItem(_human_size(r.size))

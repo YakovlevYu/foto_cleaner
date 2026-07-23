@@ -25,9 +25,19 @@ full byte-for-byte content comparison (a true 100% match).
 
 - Pick a target folder and a search folder, then press **Search**
 - Considers **all** files (not just images)
-- **Compare content without name** checkbox: when checked, filenames are ignored —
-  files of equal size are compared byte-for-byte, so renamed copies are detected.
-  When unchecked, matching is by filename first, then content.
+- **Compare content without name** checkbox: when checked, filenames are ignored
+  and matching is type-aware (so renamed copies and copies that differ only in
+  metadata are detected):
+  - **JPEG** files are matched by their image payload — EXIF/JFIF/ICC/comment
+    metadata is ignored, so the same photo downloaded twice still matches even
+    when the file sizes differ by a few bytes.
+  - **Video** files are matched by size within a **1%** tolerance.
+  - Other file types are not compared in this mode.
+  - **Only JPEG** / **Only videos** checkboxes restrict comparison to that
+    category (leave both unchecked to compare both).
+  - When unchecked, matching is by filename first, then a full byte-for-byte check.
+- **Double-click** a row to open the target file (or the duplicate, if you
+  double-click that column) in the default Ubuntu app
 - Results stream into the table as each duplicate is confirmed
 - Results table (sorted by target file) with columns:
   - **Target file** — relative path within the target folder (or filename)

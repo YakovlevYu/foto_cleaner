@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import bisect
 import filecmp
 import os
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QObject, pyqtSignal
+
+from foto_cleaner.content import categorize, jpeg_payload_digest
+
+# Video files match when their sizes are within this fraction of each other.
+VIDEO_SIZE_TOLERANCE = 0.01  # 1%
 
 
 @dataclass
@@ -20,8 +26,15 @@ class DupResult:
 class DuplicateFinderWorker(QObject):
     """
     Finds files in `target_folder` that also exist somewhere under
-    `search_folder` (recursively). Matches by filename first, then confirms
-    with a full byte-for-byte content comparison (the "100%" check).
+    `search_folder` (recursively).
+
+    Two matching modes:
+    - Name mode (default): match by filename first, then confirm with a full
+      byte-for-byte comparison.
+    - Content mode (ignore_names): filenames are ignored. JPEGs are matched by
+      their image payload (metadata ignored); videos are matched by size within
+      a 1% tolerance; other file types are not compared. The match_jpeg /
+      match_video flags restrict which categories are considered.
     """
 
     progress = pyqtSignal(int, int, str)     # total, processed, current filename
@@ -35,13 +48,15 @@ class DuplicateFinderWorker(QObject):
         target_folder: str,
         search_folder: str,
         ignore_names: bool = False,
+        match_jpeg: bool = True,
+        match_video: bool = True,
     ):
         super().__init__()
         self.target_folder = os.path.abspath(target_folder)
         self.search_folder = os.path.abspath(search_folder)
-        # When True, match by file size first, then confirm by content,
-        # ignoring filenames entirely.
         self.ignore_names = bool(ignore_names)
+        self.match_jpeg = bool(match_jpeg)
+        self.match_video = bool(match_video)
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -65,11 +80,7 @@ class DuplicateFinderWorker(QObject):
             same_dir = self.target_folder == self.search_folder
 
             self.status.emit("Indexing search folder…")
-            search_index = self._index_search_folder(
-                self.search_folder,
-                by_size=self.ignore_names,
-                skip_duplicates=same_dir,
-            )
+            find_candidates, confirm = self._build_matcher(same_dir)
             if self._cancelled:
                 self.status.emit("Cancelled.")
                 self.finished.emit([], self._stats([], total))
@@ -86,23 +97,16 @@ class DuplicateFinderWorker(QObject):
 
                 self.progress.emit(total, processed, os.path.basename(tpath))
 
-                # Candidate lookup: by size (names ignored) or by filename.
-                if self.ignore_names:
-                    try:
-                        key = os.path.getsize(tpath)
-                    except OSError:
-                        continue
-                else:
-                    key = os.path.basename(tpath)
-                candidates = search_index.get(key, ())
-                if same_dir:
-                    # Only match against an already-kept earlier original; the
-                    # first file of each identical group becomes that original.
-                    match = self._first_content_match(tpath, candidates, only=kept)
-                    if match is None:
-                        kept.add(os.path.abspath(tpath))
-                else:
-                    match = self._first_content_match(tpath, candidates)
+                comparable, candidates = find_candidates(tpath)
+                if not comparable:
+                    continue  # file type not compared in this mode
+
+                match = self._pick_match(
+                    tpath, candidates, only=kept if same_dir else None, confirm=confirm
+                )
+                if same_dir and match is None:
+                    # First occurrence of its group becomes the kept original.
+                    kept.add(os.path.abspath(tpath))
                 if match is not None:
                     try:
                         size = os.path.getsize(tpath)
@@ -119,6 +123,7 @@ class DuplicateFinderWorker(QObject):
                     # Target files are processed in sorted order, so streaming
                     # rows keeps the table sorted by target file as it fills.
                     self.duplicate_found.emit(result)
+
             self.status.emit(
                 f"Done. {len(results)} duplicate(s) found in {total} file(s)."
             )
@@ -127,36 +132,96 @@ class DuplicateFinderWorker(QObject):
         except Exception as e:  # noqa: BLE001 - surface any error to the UI
             self.error.emit(f"Duplicate finder error: {e}")
 
+    # ---- matcher construction ------------------------------------------
+
+    def _build_matcher(
+        self, same_dir: bool
+    ) -> Tuple[Callable[[str], Tuple[bool, list]], Callable[[str, str], bool]]:
+        """Return (find_candidates, confirm) for the active matching mode.
+
+        find_candidates(target) -> (comparable, [candidate abs paths])
+        confirm(target, candidate) -> bool  (final check before accepting)
+        """
+        if not self.ignore_names:
+            name_index = self._index_by_name(self.search_folder, skip_duplicates=same_dir)
+
+            def find_by_name(tpath: str):
+                return True, name_index.get(os.path.basename(tpath), ())
+
+            def confirm_bytes(target: str, cand: str) -> bool:
+                try:
+                    return filecmp.cmp(target, cand, shallow=False)
+                except OSError:
+                    return False
+
+            return find_by_name, confirm_bytes
+
+        # Content mode: index by JPEG payload and/or video size.
+        jpeg_index, video_sorted = self._index_by_content(
+            self.search_folder, skip_duplicates=same_dir
+        )
+        video_sizes = [s for s, _ in video_sorted]
+
+        def find_by_content(tpath: str):
+            cat = categorize(tpath)
+            if cat == "jpeg" and self.match_jpeg:
+                digest = jpeg_payload_digest(tpath)
+                if digest is None:
+                    return False, ()
+                return True, jpeg_index.get(digest, ())
+            if cat == "video" and self.match_video:
+                try:
+                    size = os.path.getsize(tpath)
+                except OSError:
+                    return False, ()
+                lo = bisect.bisect_left(video_sizes, size * (1 - VIDEO_SIZE_TOLERANCE))
+                hi = bisect.bisect_right(video_sizes, size * (1 + VIDEO_SIZE_TOLERANCE))
+                return True, [p for _, p in video_sorted[lo:hi]]
+            return False, ()
+
+        # Candidates already satisfy the matching criterion; no further check.
+        def confirm_true(target: str, cand: str) -> bool:
+            return True
+
+        return find_by_content, confirm_true
+
+    def _pick_match(
+        self,
+        target: str,
+        candidates,
+        only: Optional[set],
+        confirm: Callable[[str, str], bool],
+    ) -> Optional[str]:
+        """First candidate that passes confirm (excluding the file itself).
+
+        If `only` is given, restrict to candidates in that set (already-kept
+        originals, used in same-dir mode).
+        """
+        target_abs = os.path.abspath(target)
+        for cand in candidates:
+            cand_abs = os.path.abspath(cand)
+            if cand_abs == target_abs:
+                continue  # same physical file (overlapping folders)
+            if only is not None and cand_abs not in only:
+                continue
+            if confirm(target, cand):
+                return cand
+        return None
+
+    # ---- indexing ------------------------------------------------------
+
     def _collect_target_files(self, root: str) -> List[str]:
-        """All files under root, skipping the target's own duplicates/ folder."""
-        duplicates_dir = os.path.join(root, "duplicates")
-        collected: List[str] = []
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [
-                d
-                for d in dirnames
-                if os.path.join(dirpath, d) != duplicates_dir and d != "duplicates"
-            ]
-            for fn in filenames:
-                collected.append(os.path.join(dirpath, fn))
+        """All files under root (skipping duplicates/), sorted by relative path."""
+        collected = list(self._walk_files(root, skip_duplicates=True))
         collected.sort(key=lambda p: os.path.relpath(p, root).lower())
         return collected
 
-    def _index_search_folder(
-        self, root: str, by_size: bool = False, skip_duplicates: bool = False
-    ) -> Dict:
-        """Index absolute paths under the search folder.
-
-        The key is the file size when by_size is set (name-agnostic matching),
-        otherwise the basename. When skip_duplicates is set (same-dir mode), the
-        target's own duplicates/ folder is excluded so previously moved copies
-        are not treated as originals.
-        """
+    def _walk_files(self, root: str, skip_duplicates: bool):
+        """Yield absolute file paths under root, optionally skipping duplicates/."""
         duplicates_dir = os.path.join(root, "duplicates")
-        index: Dict = {}
         for dirpath, dirnames, filenames in os.walk(root):
             if self._cancelled:
-                return index
+                return
             if skip_duplicates:
                 dirnames[:] = [
                     d
@@ -164,37 +229,40 @@ class DuplicateFinderWorker(QObject):
                     if os.path.join(dirpath, d) != duplicates_dir and d != "duplicates"
                 ]
             for fn in filenames:
-                path = os.path.join(dirpath, fn)
-                if by_size:
-                    try:
-                        key = os.path.getsize(path)
-                    except OSError:
-                        continue
-                else:
-                    key = fn
-                index.setdefault(key, []).append(path)
+                yield os.path.join(dirpath, fn)
+
+    def _index_by_name(
+        self, root: str, skip_duplicates: bool = False
+    ) -> Dict[str, List[str]]:
+        """Map basename -> list of absolute paths under the search folder."""
+        index: Dict[str, List[str]] = {}
+        for path in self._walk_files(root, skip_duplicates):
+            index.setdefault(os.path.basename(path), []).append(path)
         return index
 
-    def _first_content_match(self, target: str, candidates, only=None) -> str | None:
-        """Return the first candidate that is a 100% byte match of target.
-
-        If `only` is given, restrict matching to candidates whose absolute path
-        is in that set (used to match against already-kept originals).
-        """
-        target_abs = os.path.abspath(target)
-        for cand in candidates:
-            cand_abs = os.path.abspath(cand)
-            if cand_abs == target_abs:
-                # Same physical file (target folder overlaps search folder).
-                continue
-            if only is not None and cand_abs not in only:
-                continue
-            try:
-                if filecmp.cmp(target, cand, shallow=False):
-                    return cand
-            except OSError:
-                continue
-        return None
+    def _index_by_content(
+        self, root: str, skip_duplicates: bool = False
+    ) -> Tuple[Dict[str, List[str]], List[Tuple[int, str]]]:
+        """Build (jpeg payload-digest index, sorted list of (size, video path))."""
+        jpeg_index: Dict[str, List[str]] = {}
+        videos: List[Tuple[int, str]] = []
+        for path in self._walk_files(root, skip_duplicates):
+            if self._cancelled:
+                break
+            cat = categorize(path)
+            if cat == "jpeg" and self.match_jpeg:
+                digest = jpeg_payload_digest(path)
+                if digest is not None:
+                    jpeg_index.setdefault(digest, []).append(path)
+            elif cat == "video" and self.match_video:
+                try:
+                    videos.append((os.path.getsize(path), path))
+                except OSError:
+                    continue
+        for paths in jpeg_index.values():
+            paths.sort()
+        videos.sort()
+        return jpeg_index, videos
 
     @staticmethod
     def _stats(results: List[DupResult], target_count: int) -> dict:
