@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "foto-cleaner"
 version = "0.1.0"
-description = "PyQt6 app to find visually similar photos and move selected duplicates to a removed folder."
+description = "PyQt6 app to find visually similar photos or exact duplicate files and move selected duplicates aside."
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
