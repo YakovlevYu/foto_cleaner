@@ -29,6 +29,7 @@ full byte-for-byte content comparison (a true 100% match).
 - Results table (sorted by target file) with columns:
   - **Target file** — relative path within the target folder (or filename)
   - **Duplicate found in** — path of the confirmed copy relative to the search folder
+  - **Size** — size of the file (sorts numerically)
   - **Remove** — checkbox (checked by default) to select for moving
 - Stats line shows target file count, duplicates found, and total duplicate size
 - **Move duplicates** → moves checked files into a `duplicates/` folder inside the

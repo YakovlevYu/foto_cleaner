@@ -30,6 +30,18 @@ class _CaseInsensitiveItem(QTableWidgetItem):
         return self.text().lower() < other.text().lower()
 
 
+class _NumericItem(QTableWidgetItem):
+    """Table item that sorts by a numeric value stored in UserRole."""
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:  # type: ignore[override]
+        a = self.data(Qt.ItemDataRole.UserRole)
+        b = other.data(Qt.ItemDataRole.UserRole)
+        try:
+            return float(a) < float(b)
+        except (TypeError, ValueError):
+            return super().__lt__(other)
+
+
 def _human_size(num: int) -> str:
     size = float(num)
     for unit in ("B", "KB", "MB", "GB", "TB"):
@@ -46,7 +58,8 @@ class DuplicatesWidget(QWidget):
 
     COL_TARGET = 0
     COL_DUP = 1
-    COL_REMOVE = 2
+    COL_SIZE = 2
+    COL_REMOVE = 3
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -96,13 +109,16 @@ class DuplicatesWidget(QWidget):
         main_layout.addWidget(self.status_label)
 
         # Results table.
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Target file", "Duplicate found in", "Remove"])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(
+            ["Target file", "Duplicate found in", "Size", "Remove"]
+        )
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(self.COL_TARGET, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(self.COL_DUP, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(self.COL_SIZE, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_REMOVE, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSortingEnabled(True)
         main_layout.addWidget(self.table, stretch=1)
@@ -303,6 +319,13 @@ class DuplicatesWidget(QWidget):
         dup_item = _CaseInsensitiveItem(r.dup_rel)
         dup_item.setToolTip(r.dup_abs)
         self.table.setItem(row, self.COL_DUP, dup_item)
+
+        size_item = _NumericItem(_human_size(r.size))
+        size_item.setData(Qt.ItemDataRole.UserRole, r.size)
+        size_item.setTextAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.table.setItem(row, self.COL_SIZE, size_item)
 
         remove_item = QTableWidgetItem()
         remove_item.setFlags(
