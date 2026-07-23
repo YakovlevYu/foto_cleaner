@@ -25,6 +25,9 @@ full byte-for-byte content comparison (a true 100% match).
 
 - Pick a target folder and a search folder, then press **Search**
 - Considers **all** files (not just images)
+- **Compare content without name** checkbox: when checked, filenames are ignored —
+  files of equal size are compared byte-for-byte, so renamed copies are detected.
+  When unchecked, matching is by filename first, then content.
 - Results stream into the table as each duplicate is confirmed
 - Results table (sorted by target file) with columns:
   - **Target file** — relative path within the target folder (or filename)

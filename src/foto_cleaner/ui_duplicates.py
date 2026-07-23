@@ -6,6 +6,7 @@ from typing import List, Optional
 from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
@@ -95,6 +96,14 @@ class DuplicatesWidget(QWidget):
         self.search_label = QLabel("(not set)")
         controls.addWidget(self.search_label, stretch=1)
 
+        # Matching mode.
+        self.ignore_names_cb = QCheckBox("Compare content without name (match by size, then content)")
+        self.ignore_names_cb.setToolTip(
+            "When checked, filenames are ignored: files of equal size are compared "
+            "byte-for-byte to find duplicates."
+        )
+        main_layout.addWidget(self.ignore_names_cb)
+
         # Stats line.
         self.stats_label = QLabel("No search run yet.")
         main_layout.addWidget(self.stats_label)
@@ -171,6 +180,7 @@ class DuplicatesWidget(QWidget):
         self.results = []
         self.target_label.setText("(not set)")
         self.search_label.setText("(not set)")
+        self.ignore_names_cb.setChecked(False)
         self.stats_label.setText("No search run yet.")
         self.status_label.setText("Select target and search folders, then press Search.")
         self.progress.setRange(0, 100)
@@ -234,7 +244,11 @@ class DuplicatesWidget(QWidget):
         self.progress.setRange(0, 0)  # indeterminate until comparison starts
 
         self._thread = QThread()
-        self._worker = DuplicateFinderWorker(self.target_folder, self.search_folder)
+        self._worker = DuplicateFinderWorker(
+            self.target_folder,
+            self.search_folder,
+            ignore_names=self.ignore_names_cb.isChecked(),
+        )
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)

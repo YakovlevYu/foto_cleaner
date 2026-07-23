@@ -30,10 +30,18 @@ class DuplicateFinderWorker(QObject):
     finished = pyqtSignal(list, dict)        # List[DupResult], stats dict
     error = pyqtSignal(str)
 
-    def __init__(self, target_folder: str, search_folder: str):
+    def __init__(
+        self,
+        target_folder: str,
+        search_folder: str,
+        ignore_names: bool = False,
+    ):
         super().__init__()
         self.target_folder = os.path.abspath(target_folder)
         self.search_folder = os.path.abspath(search_folder)
+        # When True, match by file size first, then confirm by content,
+        # ignoring filenames entirely.
+        self.ignore_names = bool(ignore_names)
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -58,7 +66,9 @@ class DuplicateFinderWorker(QObject):
 
             self.status.emit("Indexing search folder…")
             search_index = self._index_search_folder(
-                self.search_folder, skip_duplicates=same_dir
+                self.search_folder,
+                by_size=self.ignore_names,
+                skip_duplicates=same_dir,
             )
             if self._cancelled:
                 self.status.emit("Cancelled.")
@@ -76,8 +86,15 @@ class DuplicateFinderWorker(QObject):
 
                 self.progress.emit(total, processed, os.path.basename(tpath))
 
-                name = os.path.basename(tpath)
-                candidates = search_index.get(name, ())
+                # Candidate lookup: by size (names ignored) or by filename.
+                if self.ignore_names:
+                    try:
+                        key = os.path.getsize(tpath)
+                    except OSError:
+                        continue
+                else:
+                    key = os.path.basename(tpath)
+                candidates = search_index.get(key, ())
                 if same_dir:
                     # Only match against an already-kept earlier original; the
                     # first file of each identical group becomes that original.
@@ -126,16 +143,17 @@ class DuplicateFinderWorker(QObject):
         return collected
 
     def _index_search_folder(
-        self, root: str, skip_duplicates: bool = False
-    ) -> Dict[str, List[str]]:
-        """Map basename -> list of absolute paths under the search folder.
+        self, root: str, by_size: bool = False, skip_duplicates: bool = False
+    ) -> Dict:
+        """Index absolute paths under the search folder.
 
-        When skip_duplicates is set (same-dir mode), the target's own
-        duplicates/ folder is excluded so previously moved copies are not
-        treated as originals.
+        The key is the file size when by_size is set (name-agnostic matching),
+        otherwise the basename. When skip_duplicates is set (same-dir mode), the
+        target's own duplicates/ folder is excluded so previously moved copies
+        are not treated as originals.
         """
         duplicates_dir = os.path.join(root, "duplicates")
-        index: Dict[str, List[str]] = {}
+        index: Dict = {}
         for dirpath, dirnames, filenames in os.walk(root):
             if self._cancelled:
                 return index
@@ -146,7 +164,15 @@ class DuplicateFinderWorker(QObject):
                     if os.path.join(dirpath, d) != duplicates_dir and d != "duplicates"
                 ]
             for fn in filenames:
-                index.setdefault(fn, []).append(os.path.join(dirpath, fn))
+                path = os.path.join(dirpath, fn)
+                if by_size:
+                    try:
+                        key = os.path.getsize(path)
+                    except OSError:
+                        continue
+                else:
+                    key = fn
+                index.setdefault(key, []).append(path)
         return index
 
     def _first_content_match(self, target: str, candidates, only=None) -> str | None:
